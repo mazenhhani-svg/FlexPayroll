@@ -1242,7 +1242,14 @@
                     employees = Array.isArray(data.employees) ? data.employees : [];
                     shifts = Array.isArray(data.shifts) ? data.shifts : [];
                     departments = Array.isArray(data.departments) ? data.departments : [];
-                    attendanceLogs = Array.isArray(data.attendance) ? data.attendance : [];
+                    
+                    // Normalize dates in attendance logs
+                    attendanceLogs = (Array.isArray(data.attendance) ? data.attendance : []).map(log => ({
+                        ...log,
+                        date: sanitizeDateTime(log.date, 'date'),
+                        attendance: sanitizeDateTime(log.attendance, 'time')
+                    }));
+                    
                     adjustments = Array.isArray(data.adjustments) ? data.adjustments : [];
                     activatedDevices = Array.isArray(data.devices) ? data.devices : [];
                     
@@ -1339,7 +1346,47 @@
 
             // Draw Initial Dynamic QR
             regenerateDynamicQR();
+
+            // Start real-time polling
+            initRealtimeAttendancePolling();
         };
+
+        let isPolling = false;
+        function initRealtimeAttendancePolling() {
+            setInterval(async () => {
+                if (isPolling || !isInitialSyncDone) return;
+                isPolling = true;
+                try {
+                    const result = await apiRequest('getAllData', null, 'GET');
+                    if (result.success && result.data && Array.isArray(result.data.attendance)) {
+                        const newLogs = result.data.attendance.map(log => ({
+                            ...log,
+                            date: sanitizeDateTime(log.date, 'date'),
+                            attendance: sanitizeDateTime(log.attendance, 'time')
+                        }));
+
+                        // Comparison check
+                        const incomingLatestId = newLogs.length > 0 ? String(newLogs[newLogs.length - 1].id) : null;
+                        const currentLatestLog = [...attendanceLogs].sort((a,b) => String(a.id).localeCompare(String(b.id))).pop();
+                        const currentLatestId = currentLatestLog ? String(currentLatestLog.id) : null;
+
+                        if (newLogs.length !== attendanceLogs.length || incomingLatestId !== currentLatestId) {
+                            console.log("Real-time Update: New logs detected.");
+                            attendanceLogs = newLogs;
+                            if (activeScreen === 'records') {
+                                renderAttendanceLogs();
+                            } else if (activeScreen === 'dashboard') {
+                                updateDailyStats();
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.error("Polling error:", e);
+                } finally {
+                    isPolling = false;
+                }
+            }, 2000);
+        }
 
         // Live clock and date generator
         function startLiveClock() {
@@ -2056,7 +2103,8 @@
 
             let filtered = attendanceLogs;
             if (dateVal) {
-                filtered = filtered.filter(log => log.date === dateVal);
+                // Ensure strict YYYY-MM-DD comparison
+                filtered = filtered.filter(log => sanitizeDateTime(log.date, 'date') === dateVal);
             }
             if (empVal) {
                 filtered = filtered.filter(log => log.employeeCode === empVal);
@@ -2064,8 +2112,10 @@
 
             // Sort by date then by ID to ensure chronological order for pairing
             const sortedLogs = [...filtered].sort((a, b) => {
-                if (a.date !== b.date) return a.date.localeCompare(b.date);
-                return a.id.localeCompare(b.id);
+                const dateA = sanitizeDateTime(a.date, 'date');
+                const dateB = sanitizeDateTime(b.date, 'date');
+                if (dateA !== dateB) return dateA.localeCompare(dateB);
+                return String(a.id).localeCompare(String(b.id));
             });
 
             const displayData = [];
@@ -2073,7 +2123,8 @@
 
             // Grouping logs by employee and date
             sortedLogs.forEach(log => {
-                const key = `${log.employeeCode}-${log.date}`;
+                const cleanDate = sanitizeDateTime(log.date, 'date');
+                const key = `${log.employeeCode}-${cleanDate}`;
                 if (!empDateGroups[key]) empDateGroups[key] = [];
                 empDateGroups[key].push(log);
             });
@@ -2358,24 +2409,55 @@
         // --- Sanitization Utilities for Centralized Data ---
         function sanitizeDateTime(value, type = 'date') {
             if (!value || value === '--') return '--';
-            const str = String(value);
+            
+            // If it's a Date object
+            if (value instanceof Date) {
+                if (type === 'date') {
+                    const y = value.getFullYear();
+                    const m = String(value.getMonth() + 1).padStart(2, '0');
+                    const d = String(value.getDate()).padStart(2, '0');
+                    return `${y}-${m}-${d}`;
+                } else {
+                    const h = String(value.getHours()).padStart(2, '0');
+                    const min = String(value.getMinutes()).padStart(2, '0');
+                    return `${h}:${min}`;
+                }
+            }
+
+            const str = String(value).trim();
             
             // Handle ISO strings (e.g., 2023-10-27T10:30:00.000Z)
             if (str.includes('T')) {
                 const parts = str.split('T');
                 if (type === 'date') return parts[0];
-                // Extract HH:mm from 10:30:00.000Z
+                // Extract HH:mm
                 const timePart = parts[1].split('.')[0].split('Z')[0];
                 return timePart.substring(0, 5);
             }
 
-            // Handle date strings that might be longer than YYYY-MM-DD
-            if (type === 'date' && str.length > 10) return str.substring(0, 10);
+            // Handle YYYY-MM-DD or other formats
+            if (type === 'date') {
+                // Look for YYYY-MM-DD pattern
+                const match = str.match(/(\d{4})-(\d{2})-(\d{2})/);
+                if (match) return match[0];
+                // Try to parse if not matching
+                try {
+                    const d = new Date(str);
+                    if (!isNaN(d.getTime())) {
+                        const y = d.getFullYear();
+                        const m = String(d.getMonth() + 1).padStart(2, '0');
+                        const day = String(d.getDate()).padStart(2, '0');
+                        return `${y}-${m}-${day}`;
+                    }
+                } catch(e) {}
+            }
             
             // Handle time strings (extract HH:mm)
-            if (type === 'time' && str.includes(':')) {
-                const parts = str.split(':');
-                return `${parts[0].padStart(2, '0')}:${parts[1].padStart(2, '0')}`;
+            if (type === 'time') {
+                const match = str.match(/(\d{1,2}):(\d{2})/);
+                if (match) {
+                    return `${match[1].padStart(2, '0')}:${match[2].padStart(2, '0')}`;
+                }
             }
 
             return str;
@@ -2707,7 +2789,7 @@
                 });
 
                 // Group logs by date to handle multiple punches and accurately count days
-                const sortedEmpLogs = [...empLogs].sort((a, b) => a.id.localeCompare(b.id));
+                const sortedEmpLogs = [...empLogs].sort((a, b) => String(a.id).localeCompare(String(b.id)));
                 const dateGroups = {};
                 sortedEmpLogs.forEach(log => {
                     const cleanDate = sanitizeDateTime(log.date, 'date');
