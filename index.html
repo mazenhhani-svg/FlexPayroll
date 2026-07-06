@@ -112,7 +112,7 @@
                             <input type="password" id="admin-password" placeholder="••••••••" class="w-full bg-slate-950 border border-slate-800 rounded-2xl pr-12 pl-4 py-3.5 text-white focus:border-brand-500 outline-none transition-all">
                         </div>
                     </div>
-                    <button onclick="handleAdminLogin()" class="w-full py-4 bg-brand-500 hover:bg-brand-600 text-white rounded-2xl font-black text-lg shadow-xl shadow-brand-500/20 transition-all flex items-center justify-center gap-2">
+                    <button id="admin-login-btn" onclick="handleAdminLogin()" class="w-full py-4 bg-brand-500 hover:bg-brand-600 text-white rounded-2xl font-black text-lg shadow-xl shadow-brand-500/20 transition-all flex items-center justify-center gap-2">
                         <span>دخول لوحة التحكم</span>
                         <i data-lucide="arrow-left" class="w-5 h-5"></i>
                     </button>
@@ -1106,6 +1106,8 @@
         let attendanceLogs = []; // Schema: id, date, employeeCode, employeeName, checkIn, checkout, duration, status, delayMinutes, overtimeHours, calculated
         let adjustments = []; // Remains same
         let activatedDevices = []; // Schema: hardwareId, employeeCode, activatedAt, type
+        let flex_settings = {}; // Dynamic Backend Configuration
+        let isInitialSyncDone = false;
 
         // Global Variables
         let html5QrScanner = null;
@@ -1219,12 +1221,23 @@
                 return;
             }
 
+            const loginBtn = document.getElementById('admin-login-btn');
+            if (loginBtn) {
+                loginBtn.disabled = true;
+                if (!loginBtn.dataset.originalText) {
+                    loginBtn.dataset.originalText = loginBtn.innerHTML;
+                }
+                loginBtn.innerHTML = `<span>جاري التحقق والمزامنة...</span>`;
+            }
+
             showLoading("جاري مزامنة قاعدة البيانات المركزية...");
             try {
                 const result = await apiRequest('getAllData', null, 'GET');
                 
                 if (result.success) {
                     const data = result.data || {};
+                    flex_settings = data.settings || {};
+                    
                     // Standardize local arrays from server data
                     employees = Array.isArray(data.employees) ? data.employees : [];
                     shifts = Array.isArray(data.shifts) ? data.shifts : [];
@@ -1234,6 +1247,7 @@
                     activatedDevices = Array.isArray(data.devices) ? data.devices : [];
                     
                     renderAll();
+                    isInitialSyncDone = true;
                     console.log("Synchronization complete. All UI components updated.");
                 } else {
                     throw new Error(result.message || "Failed to fetch data from central database.");
@@ -1242,6 +1256,10 @@
                 console.error("Critical Sync Error:", error);
                 showCustomToast("فشلت المزامنة: " + error.message, "warning");
             } finally {
+                if (loginBtn) {
+                    loginBtn.disabled = false;
+                    loginBtn.innerHTML = loginBtn.dataset.originalText;
+                }
                 hideLoading();
             }
         }
@@ -2798,12 +2816,35 @@
         }
 
         async function handleAdminLogin() {
+            const btn = document.getElementById('admin-login-btn');
             const pass = document.getElementById('admin-password').value;
-            if (pass === 'Admin@Flex2026') {
-                loginSuccess('admin');
-                showCustomToast('مرحباً بك أيها المدير. دخول آمن.', 'success');
-            } else {
-                showCustomToast('كلمة المرور غير صحيحة!', 'warning');
+
+            if (!isInitialSyncDone) {
+                showCustomToast('جاري التحقق والمزامنة... يرجى الانتظار ثوانٍ', 'warning');
+                return;
+            }
+
+            // UI Loading State
+            const originalText = btn.innerHTML;
+            btn.disabled = true;
+            btn.innerHTML = `<span>جاري التحقق والمزامنة...</span>`;
+
+            try {
+                // Safe Fallback: Check backend settings or use default if empty
+                const correctPass = flex_settings.adminPassword || '12345678';
+
+                if (pass === correctPass) {
+                    loginSuccess('admin');
+                    showCustomToast('مرحباً بك أيها المدير. دخول آمن.', 'success');
+                } else {
+                    showCustomToast('كلمة المرور غير صحيحة!', 'warning');
+                }
+            } catch (error) {
+                console.error("Login Error:", error);
+                showCustomToast("حدث خطأ أثناء تسجيل الدخول: " + error.message, "warning");
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = originalText;
             }
         }
 
