@@ -1103,7 +1103,7 @@
         let employees = []; // Schema: code, name, title, phone, department, baseSalary, shiftId, hourlyRate, nationalId, createdAt
         let shifts = [];    // Schema: id, name, startTime, endTime, hours, gracePeriod, createdAt
         let departments = []; // Schema: id, name, multiplier, delayPenalty, vacationBalance, createdAt
-        let attendanceLogs = []; // Schema: id, date, employeeCode, employeeName, checkIn, checkout, duration, status, delayMinutes, overtimeHours, calculated
+        let attendanceLogs = []; // Schema: id, date, employeeCode, employeeName, attendance, status
         let adjustments = []; // Remains same
         let activatedDevices = []; // Schema: hardwareId, employeeCode, activatedAt, type
         let flex_settings = {}; // Dynamic Backend Configuration
@@ -2062,44 +2062,96 @@
                 filtered = filtered.filter(log => log.employeeCode === empVal);
             }
 
-            // --- Grouping Logic for Consecutive Punch Model ---
-            const map = new Map(); // key: employeeCode-date
-            
-            // Sort by date then by ID (time) to ensure correct order
+            // Sort by date then by ID to ensure chronological order for pairing
             const sortedLogs = [...filtered].sort((a, b) => {
                 if (a.date !== b.date) return a.date.localeCompare(b.date);
                 return a.id.localeCompare(b.id);
             });
 
+            const displayData = [];
+            const empDateGroups = {};
+
+            // Grouping logs by employee and date
             sortedLogs.forEach(log => {
                 const key = `${log.employeeCode}-${log.date}`;
-                if (!map.has(key)) {
-                    map.set(key, {
-                        date: log.date,
-                        employeeCode: log.employeeCode,
-                        employeeName: log.employeeName,
-                        checkIn: log.checkIn || '--',
-                        checkout: log.checkout || '--',
-                        status: log.status,
-                        delayMinutes: log.delayMinutes || 0,
-                        duration: log.duration || 0,
-                        id: log.id
-                    });
-                } else {
-                    const entry = map.get(key);
-                    if (log.checkIn && entry.checkIn === '--') entry.checkIn = log.checkIn;
-                    if (log.checkout && entry.checkout === '--') {
-                        entry.checkout = log.checkout;
-                        entry.status = log.status;
-                        entry.duration = log.duration;
-                        entry.delayMinutes = log.delayMinutes;
-                        entry.id = log.id; // Keep track of the latest ID
-                    }
-                }
+                if (!empDateGroups[key]) empDateGroups[key] = [];
+                empDateGroups[key].push(log);
             });
 
-            const displayData = Array.from(map.values());
-            displayData.sort((a, b) => b.date.localeCompare(a.date));
+            // Pairing logic: Match consecutive "حضور" then "انصراف"
+            for (const key in empDateGroups) {
+                const logs = empDateGroups[key];
+                let currentPair = null;
+
+                logs.forEach(log => {
+                    if (log.status === "حضور") {
+                        if (currentPair) displayData.push(currentPair);
+                        
+                        const emp = employees.find(e => e.code === log.employeeCode);
+                        const shift = emp ? shifts.find(s => s.id === emp.shiftId) : null;
+                        let delay = 0;
+                        if (shift) {
+                            const checkInMins = convertTimeToMinutes(log.attendance);
+                            const shiftStartMins = convertTimeToMinutes(shift.startTime);
+                            const grace = parseInt(shift.gracePeriod || 0);
+                            if (checkInMins > shiftStartMins + grace) {
+                                delay = checkInMins - shiftStartMins;
+                            }
+                        }
+
+                        currentPair = {
+                            id: log.id,
+                            date: log.date,
+                            employeeCode: log.employeeCode,
+                            employeeName: log.employeeName,
+                            checkIn: log.attendance,
+                            checkout: '--',
+                            status: "حضور",
+                            delayMinutes: delay,
+                            duration: 0,
+                            overtimeHours: 0
+                        };
+                    } else if (log.status === "انصراف") {
+                        if (currentPair) {
+                            currentPair.checkout = log.attendance;
+                            currentPair.status = "مكتمل";
+                            
+                            const durationMins = convertTimeToMinutes(currentPair.checkout) - convertTimeToMinutes(currentPair.checkIn);
+                            currentPair.duration = (durationMins / 60).toFixed(2);
+                            
+                            const emp = employees.find(e => e.code === log.employeeCode);
+                            const shift = emp ? shifts.find(s => s.id === emp.shiftId) : null;
+                            if (shift) {
+                                const shiftEndMins = convertTimeToMinutes(shift.endTime);
+                                const checkoutMins = convertTimeToMinutes(log.attendance);
+                                const diff = checkoutMins - shiftEndMins;
+                                if (diff >= 15) {
+                                    currentPair.overtimeHours = (diff / 60).toFixed(2);
+                                }
+                            }
+                            displayData.push(currentPair);
+                            currentPair = null;
+                        } else {
+                            displayData.push({
+                                id: log.id, date: log.date, employeeCode: log.employeeCode, employeeName: log.employeeName,
+                                checkIn: '--', checkout: log.attendance, status: "انصراف فقط",
+                                delayMinutes: 0, duration: 0, overtimeHours: 0
+                            });
+                        }
+                    } else {
+                        if (currentPair) displayData.push(currentPair);
+                        currentPair = null;
+                        displayData.push({
+                            id: log.id, date: log.date, employeeCode: log.employeeCode, employeeName: log.employeeName,
+                            checkIn: '--', checkout: '--', status: log.status,
+                            delayMinutes: 0, duration: 0, overtimeHours: 0
+                        });
+                    }
+                });
+                if (currentPair) displayData.push(currentPair);
+            }
+
+            displayData.sort((a, b) => b.date.localeCompare(a.date) || b.id.localeCompare(a.id));
 
             if (displayData.length === 0) {
                 tbody.innerHTML = `<tr><td colspan="7" class="p-8 text-center text-slate-500">لا توجد سجلات حضور للمحدد حالياً.</td></tr>`;
@@ -2118,7 +2170,7 @@
                         <td class="p-4 font-semibold text-red-400">${log.checkout}</td>
                         <td class="p-4">
                             <span class="px-2.5 py-1 text-xs font-semibold rounded-lg border block w-fit ${statusColor}">
-                                ${log.status} ${log.delayMinutes > 0 ? `(${log.delayMinutes} دقيقة)` : ''}
+                                ${log.status} ${log.delayMinutes > 0 ? `(${log.delayMinutes} دقيقة تأخير)` : ''}
                             </span>
                         </td>
                         <td class="p-4 font-bold text-slate-200">${log.duration && log.duration > 0 ? `${log.duration} ساعة` : '--'}</td>
@@ -2236,37 +2288,32 @@
                 const checkIn = document.getElementById('manual-checkin').value;
                 const checkout = document.getElementById('manual-checkout').value;
 
-                const shift = shifts.find(s => s.id === emp.shiftId);
-                let delay = 0;
-                if (shift) {
-                    const checkInMinutes = convertTimeToMinutes(checkIn);
-                    const shiftStartMinutes = convertTimeToMinutes(shift.startTime);
-                    if (checkInMinutes > shiftStartMinutes + shift.gracePeriod) {
-                        delay = checkInMinutes - shiftStartMinutes;
-                    }
-                }
-
-                const diffHrs = (convertTimeToMinutes(checkout) - convertTimeToMinutes(checkIn)) / 60;
-
-                const newLog = {
-                    id: `ATT-${Date.now().toString().slice(-4)}`,
+                // Save Check-in Log
+                const checkInLog = {
+                    id: `ATT-${Date.now()}-IN`,
                     date,
                     employeeCode: empId,
                     employeeName: emp.name,
-                    checkIn,
-                    checkout,
-                    duration: parseFloat(diffHrs.toFixed(1)),
-                    delayMinutes: delay,
-                    status: delay > 0 ? "تأخير" : "حضور كامل",
-                    overtimeHours: 0,
-                    calculated: false
+                    attendance: checkIn,
+                    status: "حضور"
                 };
+                await postToBackend({ action: 'saveAttendance', data: checkInLog });
 
-                const result = await postToBackend({ action: 'saveAttendance', data: newLog });
+                // Save Check-out Log (with a slight delay in ID to ensure ordering)
+                const checkOutLog = {
+                    id: `ATT-${Date.now()}-OUT`,
+                    date,
+                    employeeCode: empId,
+                    employeeName: emp.name,
+                    attendance: checkout,
+                    status: "انصراف"
+                };
+                const result = await postToBackend({ action: 'saveAttendance', data: checkOutLog });
+
                 if (result.success) {
                     await syncAllDataFromBackend();
                     closeModal('modal-manual-attendance');
-                    showCustomToast('تم تسجيل الحضور اليدوي بنجاح', 'success');
+                    showCustomToast('تم تسجيل الحضور والانصراف اليدوي بنجاح', 'success');
                 } else {
                     throw new Error(result.message);
                 }
@@ -2533,13 +2580,16 @@
                 });
 
                 if (result.success) {
-                    await syncAllDataFromBackend();
-                    const log = result.data;
-                    const actionText = log.type === 'CHECK_IN' ? 
-                        `حضور (توقيت تسجيل الدخول: ${log.checkIn})` : 
-                        `انصراف (توقيت تسجيل الخروج: ${log.checkout})`;
+                    const newLog = result.data;
+                    // Add new log to local state immediately
+                    attendanceLogs.unshift(newLog);
+                    renderAttendanceLogs();
+
+                    const actionText = newLog.status === 'حضور' ? 
+                        `حضور (توقيت تسجيل الدخول: ${newLog.attendance})` : 
+                        `انصراف (توقيت تسجيل الخروج: ${newLog.attendance})`;
                     
-                    triggerScanSuccessUI(emp.name, actionText, log.status || "تمت العملية بنجاح");
+                    triggerScanSuccessUI(emp.name, actionText, "تم تحديث السجلات لحظياً");
                 } else {
                     throw new Error(result.error || "خطأ في معالجة البيانات");
                 }
@@ -2612,10 +2662,60 @@
                     log.date <= end
                 );
 
-                // Filter out "Leave" logs for attendance counting
-                const attendanceLogsInPeriod = empLogs.filter(log => log.status !== "إجازة");
-                let daysAttended = attendanceLogsInPeriod.length;
-                const leaveTakenInPeriod = empLogs.filter(log => log.status === "إجازة").length;
+                // Group logs by date to handle multiple punches and accurately count days
+                const sortedEmpLogs = [...empLogs].sort((a, b) => a.id.localeCompare(b.id));
+                const dateGroups = {};
+                sortedEmpLogs.forEach(log => {
+                    if (!dateGroups[log.date]) dateGroups[log.date] = [];
+                    dateGroups[log.date].push(log);
+                });
+
+                let totalHoursWorked = 0;
+                let totalDelayMinutes = 0;
+                let calculatedOvertimeHours = 0;
+                let daysAttended = 0;
+                let leaveTakenInPeriod = 0;
+
+                for (const date in dateGroups) {
+                    const logs = dateGroups[date];
+                    let currentPairIn = null;
+                    let isLeave = false;
+                    let isAttendance = false;
+
+                    logs.forEach(log => {
+                        if (log.status === "إجازة") {
+                            isLeave = true;
+                        } else if (log.status === "حضور") {
+                            isAttendance = true;
+                            currentPairIn = log.attendance;
+                            if (shift) {
+                                const inMins = convertTimeToMinutes(log.attendance);
+                                const startMins = convertTimeToMinutes(shift.startTime);
+                                const grace = parseInt(shift.gracePeriod || 0);
+                                if (inMins > startMins + grace) totalDelayMinutes += (inMins - startMins);
+                            }
+                        } else if (log.status === "انصراف") {
+                            isAttendance = true;
+                            if (currentPairIn) {
+                                const outMins = convertTimeToMinutes(log.attendance);
+                                const inMins = convertTimeToMinutes(currentPairIn);
+                                totalHoursWorked += (outMins - inMins) / 60;
+                                
+                                if (shift) {
+                                    const endMins = convertTimeToMinutes(shift.endTime);
+                                    const diff = outMins - endMins;
+                                    if (diff >= 15) calculatedOvertimeHours += (diff / 60);
+                                }
+                                currentPairIn = null;
+                            }
+                        } else {
+                            isAttendance = true;
+                        }
+                    });
+
+                    if (isLeave) leaveTakenInPeriod++;
+                    else if (isAttendance) daysAttended++;
+                }
 
                 // Monthly Accrual Leave System Logic
                 const allEmpLeaveLogs = attendanceLogs.filter(log => log.employeeCode === emp.code && log.status === "إجازة");
@@ -2638,37 +2738,6 @@
                 const unpaidLeaveInPeriod = Math.max(0, totalExcessLeave - prevExcessLeave);
                 const leavePenalty = unpaidLeaveInPeriod * (emp.baseSalary / 30);
 
-                // 2. Process work hours, delay penalties, overtime
-                let totalHoursWorked = 0;
-                let totalDelayMinutes = 0;
-                let calculatedOvertimeHours = 0;
-
-                // Group logs by date to avoid double counting if multiple rows exist
-                const dailyStats = new Map();
-                empLogs.forEach(log => {
-                    if (!dailyStats.has(log.date)) {
-                        dailyStats.set(log.date, {
-                            duration: 0,
-                            delay: 0,
-                            overtime: 0,
-                            isAttendance: log.status !== "إجازة"
-                        });
-                    }
-                    const stat = dailyStats.get(log.date);
-                    stat.duration += parseFloat(log.duration || 0);
-                    stat.delay += parseInt(log.delayMinutes || 0);
-                    stat.overtime += parseFloat(log.overtimeHours || 0);
-                });
-
-                dailyStats.forEach(stat => {
-                    if (stat.isAttendance) {
-                        totalHoursWorked += stat.duration;
-                        totalDelayMinutes += stat.delay;
-                        calculatedOvertimeHours += stat.overtime;
-                    }
-                });
-
-                daysAttended = dailyStats.size - Array.from(dailyStats.values()).filter(s => !s.isAttendance).length;
                 const overtimeMultiplier = dept ? dept.multiplier : 1.5;
                 const penaltyMultiplier = dept ? dept.delayPenalty : 1.0;
 
