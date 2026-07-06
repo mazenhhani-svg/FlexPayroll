@@ -2084,6 +2084,9 @@
                 let currentPair = null;
 
                 logs.forEach(log => {
+                    const cleanDate = sanitizeDateTime(log.date, 'date');
+                    const cleanTime = sanitizeDateTime(log.attendance, 'time');
+
                     if (log.status === "حضور") {
                         if (currentPair) displayData.push(currentPair);
                         
@@ -2091,7 +2094,7 @@
                         const shift = emp ? shifts.find(s => s.id === emp.shiftId) : null;
                         let delay = 0;
                         if (shift) {
-                            const checkInMins = convertTimeToMinutes(log.attendance);
+                            const checkInMins = convertTimeToMinutes(cleanTime);
                             const shiftStartMins = convertTimeToMinutes(shift.startTime);
                             const grace = parseInt(shift.gracePeriod || 0);
                             if (checkInMins > shiftStartMins + grace) {
@@ -2101,10 +2104,10 @@
 
                         currentPair = {
                             id: log.id,
-                            date: log.date,
+                            date: cleanDate,
                             employeeCode: log.employeeCode,
                             employeeName: log.employeeName,
-                            checkIn: log.attendance,
+                            checkIn: cleanTime,
                             checkout: '--',
                             status: "حضور",
                             delayMinutes: delay,
@@ -2113,7 +2116,7 @@
                         };
                     } else if (log.status === "انصراف") {
                         if (currentPair) {
-                            currentPair.checkout = log.attendance;
+                            currentPair.checkout = cleanTime;
                             currentPair.status = "مكتمل";
                             
                             const durationMins = convertTimeToMinutes(currentPair.checkout) - convertTimeToMinutes(currentPair.checkIn);
@@ -2123,7 +2126,7 @@
                             const shift = emp ? shifts.find(s => s.id === emp.shiftId) : null;
                             if (shift) {
                                 const shiftEndMins = convertTimeToMinutes(shift.endTime);
-                                const checkoutMins = convertTimeToMinutes(log.attendance);
+                                const checkoutMins = convertTimeToMinutes(cleanTime);
                                 const diff = checkoutMins - shiftEndMins;
                                 if (diff >= 15) {
                                     currentPair.overtimeHours = (diff / 60).toFixed(2);
@@ -2133,8 +2136,8 @@
                             currentPair = null;
                         } else {
                             displayData.push({
-                                id: log.id, date: log.date, employeeCode: log.employeeCode, employeeName: log.employeeName,
-                                checkIn: '--', checkout: log.attendance, status: "انصراف فقط",
+                                id: log.id, date: cleanDate, employeeCode: log.employeeCode, employeeName: log.employeeName,
+                                checkIn: '--', checkout: cleanTime, status: "انصراف فقط",
                                 delayMinutes: 0, duration: 0, overtimeHours: 0
                             });
                         }
@@ -2142,7 +2145,7 @@
                         if (currentPair) displayData.push(currentPair);
                         currentPair = null;
                         displayData.push({
-                            id: log.id, date: log.date, employeeCode: log.employeeCode, employeeName: log.employeeName,
+                            id: log.id, date: cleanDate, employeeCode: log.employeeCode, employeeName: log.employeeName,
                             checkIn: '--', checkout: '--', status: log.status,
                             delayMinutes: 0, duration: 0, overtimeHours: 0
                         });
@@ -2308,15 +2311,23 @@
                     attendance: checkout,
                     status: "انصراف"
                 };
-                const result = await postToBackend({ action: 'saveAttendance', data: checkOutLog });
+                await postToBackend({ action: 'saveAttendance', data: checkOutLog });
 
-                if (result.success) {
-                    await syncAllDataFromBackend();
-                    closeModal('modal-manual-attendance');
-                    showCustomToast('تم تسجيل الحضور والانصراف اليدوي بنجاح', 'success');
-                } else {
-                    throw new Error(result.message);
-                }
+                // Instant real-time local update
+                checkInLog.date = sanitizeDateTime(checkInLog.date, 'date');
+                checkInLog.attendance = sanitizeDateTime(checkInLog.attendance, 'time');
+                checkOutLog.date = sanitizeDateTime(checkOutLog.date, 'date');
+                checkOutLog.attendance = sanitizeDateTime(checkOutLog.attendance, 'time');
+
+                attendanceLogs.unshift(checkInLog);
+                attendanceLogs.unshift(checkOutLog);
+                renderAttendanceLogs();
+
+                closeModal('modal-manual-attendance');
+                showCustomToast('تم تسجيل الحضور والانصراف اليدوي بنجاح', 'success');
+                
+                // Background sync to ensure perfect alignment
+                syncAllDataFromBackend();
             } catch (error) {
                 showCustomToast('حدث خطأ أثناء الاتصال بقاعدة البيانات المركزية.', 'warning');
             } finally {
@@ -2344,9 +2355,36 @@
             }
         }
 
+        // --- Sanitization Utilities for Centralized Data ---
+        function sanitizeDateTime(value, type = 'date') {
+            if (!value || value === '--') return '--';
+            const str = String(value);
+            
+            // Handle ISO strings (e.g., 2023-10-27T10:30:00.000Z)
+            if (str.includes('T')) {
+                const parts = str.split('T');
+                if (type === 'date') return parts[0];
+                // Extract HH:mm from 10:30:00.000Z
+                const timePart = parts[1].split('.')[0].split('Z')[0];
+                return timePart.substring(0, 5);
+            }
+
+            // Handle date strings that might be longer than YYYY-MM-DD
+            if (type === 'date' && str.length > 10) return str.substring(0, 10);
+            
+            // Handle time strings (extract HH:mm)
+            if (type === 'time' && str.includes(':')) {
+                const parts = str.split(':');
+                return `${parts[0].padStart(2, '0')}:${parts[1].padStart(2, '0')}`;
+            }
+
+            return str;
+        }
+
         function convertTimeToMinutes(timeStr) {
-            if (!timeStr) return 0;
-            const parts = timeStr.split(':');
+            const cleanTime = sanitizeDateTime(timeStr, 'time');
+            if (!cleanTime || cleanTime === '--') return 0;
+            const parts = cleanTime.split(':');
             return parseInt(parts[0]) * 60 + parseInt(parts[1]);
         }
 
@@ -2581,6 +2619,11 @@
 
                 if (result.success) {
                     const newLog = result.data;
+                    
+                    // Sanitize incoming log for instant UI
+                    newLog.date = sanitizeDateTime(newLog.date, 'date');
+                    newLog.attendance = sanitizeDateTime(newLog.attendance, 'time');
+
                     // Add new log to local state immediately
                     attendanceLogs.unshift(newLog);
                     renderAttendanceLogs();
@@ -2656,18 +2699,20 @@
                 const shift = shifts.find(s => s.id === emp.shiftId);
                 
                 // 1. Gather logs of this employee inside date range
-                const empLogs = attendanceLogs.filter(log => 
-                    log.employeeCode === emp.code && 
-                    log.date >= start && 
-                    log.date <= end
-                );
+                const empLogs = attendanceLogs.filter(log => {
+                    const cleanDate = sanitizeDateTime(log.date, 'date');
+                    return log.employeeCode === emp.code && 
+                           cleanDate >= start && 
+                           cleanDate <= end;
+                });
 
                 // Group logs by date to handle multiple punches and accurately count days
                 const sortedEmpLogs = [...empLogs].sort((a, b) => a.id.localeCompare(b.id));
                 const dateGroups = {};
                 sortedEmpLogs.forEach(log => {
-                    if (!dateGroups[log.date]) dateGroups[log.date] = [];
-                    dateGroups[log.date].push(log);
+                    const cleanDate = sanitizeDateTime(log.date, 'date');
+                    if (!dateGroups[cleanDate]) dateGroups[cleanDate] = [];
+                    dateGroups[cleanDate].push(log);
                 });
 
                 let totalHoursWorked = 0;
