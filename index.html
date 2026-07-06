@@ -2044,12 +2044,51 @@
                 filtered = filtered.filter(log => log.employeeCode === empVal);
             }
 
-            if (filtered.length === 0) {
+            // --- Grouping Logic for Consecutive Punch Model ---
+            const map = new Map(); // key: employeeCode-date
+            
+            // Sort by date then by ID (time) to ensure correct order
+            const sortedLogs = [...filtered].sort((a, b) => {
+                if (a.date !== b.date) return a.date.localeCompare(b.date);
+                return a.id.localeCompare(b.id);
+            });
+
+            sortedLogs.forEach(log => {
+                const key = `${log.employeeCode}-${log.date}`;
+                if (!map.has(key)) {
+                    map.set(key, {
+                        date: log.date,
+                        employeeCode: log.employeeCode,
+                        employeeName: log.employeeName,
+                        checkIn: log.checkIn || '--',
+                        checkout: log.checkout || '--',
+                        status: log.status,
+                        delayMinutes: log.delayMinutes || 0,
+                        duration: log.duration || 0,
+                        id: log.id
+                    });
+                } else {
+                    const entry = map.get(key);
+                    if (log.checkIn && entry.checkIn === '--') entry.checkIn = log.checkIn;
+                    if (log.checkout && entry.checkout === '--') {
+                        entry.checkout = log.checkout;
+                        entry.status = log.status;
+                        entry.duration = log.duration;
+                        entry.delayMinutes = log.delayMinutes;
+                        entry.id = log.id; // Keep track of the latest ID
+                    }
+                }
+            });
+
+            const displayData = Array.from(map.values());
+            displayData.sort((a, b) => b.date.localeCompare(a.date));
+
+            if (displayData.length === 0) {
                 tbody.innerHTML = `<tr><td colspan="7" class="p-8 text-center text-slate-500">لا توجد سجلات حضور للمحدد حالياً.</td></tr>`;
                 return;
             }
 
-            filtered.forEach(log => {
+            displayData.forEach(log => {
                 const empName = log.employeeName || 'موظف مجهول';
                 const statusColor = log.delayMinutes > 0 ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
 
@@ -2057,14 +2096,14 @@
                     <tr class="hover:bg-slate-700/30 transition-colors">
                         <td class="p-4 text-slate-300 font-mono text-xs">${log.date}</td>
                         <td class="p-4 font-bold text-slate-200">${empName}</td>
-                        <td class="p-4 font-semibold text-emerald-400">${log.checkIn || '--'}</td>
-                        <td class="p-4 font-semibold text-red-400">${log.checkout || '--'}</td>
+                        <td class="p-4 font-semibold text-emerald-400">${log.checkIn}</td>
+                        <td class="p-4 font-semibold text-red-400">${log.checkout}</td>
                         <td class="p-4">
                             <span class="px-2.5 py-1 text-xs font-semibold rounded-lg border block w-fit ${statusColor}">
                                 ${log.status} ${log.delayMinutes > 0 ? `(${log.delayMinutes} دقيقة)` : ''}
                             </span>
                         </td>
-                        <td class="p-4 font-bold text-slate-200">${log.duration ? `${log.duration} ساعة` : '--'}</td>
+                        <td class="p-4 font-bold text-slate-200">${log.duration && log.duration > 0 ? `${log.duration} ساعة` : '--'}</td>
                         <td class="p-4 text-center">
                             <button onclick="deleteAttendance('${log.id}')" class="text-red-400 hover:text-red-500 p-1.5 hover:bg-red-500/10 rounded-lg transition-all" title="إلغاء السجل">
                                 <i data-lucide="trash-2" class="w-4 h-4"></i>
@@ -2459,96 +2498,38 @@
                 return;
             }
 
-            // --- BUG 1: Cooldown Check (15 minutes) ---
             const now = new Date();
-            const fifteenMinutesInMs = 15 * 60 * 1000;
-            
-            // Check last recorded log for this employee
-            const recentLog = attendanceLogs
-                .filter(log => log.employeeCode === targetCode)
-                .sort((a, b) => {
-                    const timeA = new Date(`${a.date}T${a.checkout || a.checkIn}`).getTime();
-                    const timeB = new Date(`${b.date}T${b.checkout || b.checkIn}`).getTime();
-                    return timeB - timeA;
-                })[0];
-
-            if (recentLog) {
-                const lastTime = new Date(`${recentLog.date}T${recentLog.checkout || recentLog.checkIn}`).getTime();
-                if ((now.getTime() - lastTime) < fifteenMinutesInMs) {
-                    showCustomToast("تم تسجيل بصمتك بالفعل! يرجى الانتظار 15 دقيقة بين العمليات.", 'warning');
-                    isScanning = false;
-                    return;
-                }
-            }
-
             const today = now.toISOString().split('T')[0];
             const timeStr = now.toTimeString().slice(0, 5); // "HH:MM"
 
             showLoading("جاري معالجة بيانات الحضور...");
             try {
-                // Check if already checked in today
-                const existingLogIdx = attendanceLogs.findIndex(log => log.date === today && log.employeeCode === targetCode);
-
-                if (existingLogIdx === -1) {
-                    // Register CHECK-IN
-                    const shift = shifts.find(s => s.id === emp.shiftId);
-                    let delay = 0;
-                    let status = "حضور كامل";
-
-                    if (shift) {
-                        const checkInMinutes = convertTimeToMinutes(timeStr);
-                        const shiftStartMinutes = convertTimeToMinutes(shift.startTime);
-                        if (checkInMinutes > shiftStartMinutes + shift.gracePeriod) {
-                            delay = checkInMinutes - shiftStartMinutes;
-                            status = "تأخير";
-                        }
-                    }
-
-                    const newLog = {
-                        id: `ATT-${Date.now().toString().slice(-4)}`,
-                        date: today,
+                // All logic (cooldown, check-in vs check-out) is now handled by the backend
+                // for absolute consistency across multiple station kiosks.
+                const result = await postToBackend({ 
+                    action: 'logAttendance', 
+                    data: { 
                         employeeCode: targetCode,
-                        employeeName: emp.name,
-                        checkIn: timeStr,
-                        checkout: null,
-                        duration: null,
-                        delayMinutes: delay,
-                        status: status,
-                        overtimeHours: 0,
-                        calculated: false
-                    };
+                        timestamp: now.toISOString() 
+                    } 
+                });
 
-                    const result = await postToBackend({ action: 'saveAttendance', data: newLog });
-                    if (result.success) {
-                        await syncAllDataFromBackend();
-                        triggerScanSuccessUI(emp.name, `حضور (توقيت تسجيل الدخول: ${timeStr})`, status);
-                    } else {
-                        throw new Error(result.message);
-                    }
+                if (result.success) {
+                    await syncAllDataFromBackend();
+                    const log = result.data;
+                    const actionText = log.type === 'CHECK_IN' ? 
+                        `حضور (توقيت تسجيل الدخول: ${log.checkIn})` : 
+                        `انصراف (توقيت تسجيل الخروج: ${log.checkout})`;
+                    
+                    triggerScanSuccessUI(emp.name, actionText, log.status || "تمت العملية بنجاح");
                 } else {
-                    // Register CHECK-OUT
-                    const log = attendanceLogs[existingLogIdx];
-                    if (log.checkout) {
-                        triggerScanSuccessUI(emp.name, "تم تسجيل الدخول والخروج مسبقاً لهذا اليوم!", "مكتمل");
-                        return;
-                    }
-
-                    const diffHrs = (convertTimeToMinutes(timeStr) - convertTimeToMinutes(log.checkIn)) / 60;
-                    const updatedLog = { ...log, checkout: timeStr, duration: parseFloat(diffHrs.toFixed(1)) };
-
-                    const result = await postToBackend({ action: 'updateAttendance', data: updatedLog });
-                    if (result.success) {
-                        await syncAllDataFromBackend();
-                        triggerScanSuccessUI(emp.name, `انصراف (توقيت تسجيل الخروج: ${timeStr})`, "تم الانصراف بنجاح");
-                    } else {
-                        throw new Error(result.message);
-                    }
+                    throw new Error(result.error || "خطأ في معالجة البيانات");
                 }
             } catch (error) {
-                showCustomToast('حدث خطأ أثناء الاتصال بقاعدة البيانات المركزية.', 'warning');
+                showCustomToast(error.message || 'حدث خطأ أثناء الاتصال بقاعدة البيانات المركزية.', 'warning');
             } finally {
                 hideLoading();
-                // Keep flag true for a short moment to ensure UI update and prevent immediate re-scan
+                // Keep flag true for a short moment to prevent immediate re-scan
                 setTimeout(() => { isScanning = false; }, 2000);
             }
         }
@@ -2644,33 +2625,34 @@
                 let totalDelayMinutes = 0;
                 let calculatedOvertimeHours = 0;
 
-                attendanceLogsInPeriod.forEach(log => {
-                    if (shift && log.checkIn && log.checkout) {
-                        const actualCheckInMinutes = convertTimeToMinutes(log.checkIn);
-                        const actualCheckOutMinutes = convertTimeToMinutes(log.checkout);
-                        const shiftStartMinutes = convertTimeToMinutes(shift.startTime);
-                        const shiftEndMinutes = convertTimeToMinutes(shift.endTime);
-
-                        // Force the calculation start time to never be earlier than the official shift start time
-                        const effectiveCheckInMinutes = Math.max(actualCheckInMinutes, shiftStartMinutes);
-                        
-                        // Calculate effective daily hours (ignoring early check-in)
-                        const dayActualHours = Math.max(0, (actualCheckOutMinutes - effectiveCheckInMinutes) / 60);
-                        totalHoursWorked += dayActualHours;
-
-                        // Calculate overtime: strictly reward extra minutes after shift end if >= 15 minutes
-                        const extraMinutesOut = actualCheckOutMinutes - shiftEndMinutes;
-                        if (extraMinutesOut >= 15) {
-                            calculatedOvertimeHours += (extraMinutesOut / 60);
-                        }
-                    } else {
-                        totalHoursWorked += (log.duration || 0);
+                // Group logs by date to avoid double counting if multiple rows exist
+                const dailyStats = new Map();
+                empLogs.forEach(log => {
+                    if (!dailyStats.has(log.date)) {
+                        dailyStats.set(log.date, {
+                            duration: 0,
+                            delay: 0,
+                            overtime: 0,
+                            isAttendance: log.status !== "إجازة"
+                        });
                     }
-                    
-                    totalDelayMinutes += (log.delayMinutes || 0);
+                    const stat = dailyStats.get(log.date);
+                    stat.duration += parseFloat(log.duration || 0);
+                    stat.delay += parseInt(log.delayMinutes || 0);
+                    stat.overtime += parseFloat(log.overtimeHours || 0);
                 });
 
-                // 3. Compute Financials
+                dailyStats.forEach(stat => {
+                    if (stat.isAttendance) {
+                        totalHoursWorked += stat.duration;
+                        totalDelayMinutes += stat.delay;
+                        calculatedOvertimeHours += stat.overtime;
+                    }
+                });
+
+                const attendanceLogsInPeriod = empLogs.filter(log => log.status !== "إجازة");
+                const daysAttended = dailyStats.size - Array.from(dailyStats.values()).filter(s => !s.isAttendance).length;
+                const leaveTakenInPeriod = empLogs.filter(log => log.status === "إجازة").length;
                 const overtimeMultiplier = dept ? dept.multiplier : 1.5;
                 const penaltyMultiplier = dept ? dept.delayPenalty : 1.0;
 
