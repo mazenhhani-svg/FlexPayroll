@@ -1109,6 +1109,7 @@
 
         // Global Variables
         let html5QrScanner = null;
+        let isScanning = false;
         let qrGenerator = null;
         let securityToken = '';
         let qrTimerInterval = null;
@@ -2395,27 +2396,36 @@
         }
 
         function onScanSuccess(decodedText, decodedResult) {
+            if (isScanning) return;
+            
             try {
                 const qrData = JSON.parse(decodedText);
-                // Security handshake validator
+                let targetCode = null;
+
                 if (qrData.system === 'FlexPayrollSecurityGate') {
-                    // Check if token is valid and not expired (e.g. within 30 seconds threshold)
                     const isTokenFresh = (Date.now() - qrData.timestamp) < 30000;
-                    
                     if (isTokenFresh) {
-                        // Success Sound or visual pulse trigger
-                        triggerAttendanceRegister();
+                        // Extract code if present in payload, otherwise use current logged in employee code
+                        targetCode = qrData.empCode || (currentUserRole === 'employee' ? currentEmployeeId : null);
+                        if (targetCode) {
+                            triggerAttendanceLog(targetCode);
+                        } else {
+                            showScanFailureMessage("فشل التعرف على هوية الموظف في الجلسة الحالية.");
+                        }
                     } else {
                         showScanFailureMessage("كود منتهي الصلاحية! يرجى مسح الكود المحدث.");
                     }
+                } else if (qrData.empCode) {
+                    triggerAttendanceLog(qrData.empCode);
                 } else {
                     showScanFailureMessage("الرمز الممسوح غير متوافق مع نظام فلكس بايرول.");
                 }
             } catch(e) {
                 // Handle raw employee ID scanning as fallback
-                const foundEmp = employees.find(emp => emp.code === decodedText.trim());
+                const rawCode = decodedText.trim();
+                const foundEmp = employees.find(emp => emp.code === rawCode);
                 if (foundEmp) {
-                    processAttendanceForEmployee(foundEmp.code);
+                    triggerAttendanceLog(foundEmp.code);
                 } else {
                     showScanFailureMessage("رمز غير صالح أو موظف غير معرف.");
                 }
@@ -2424,17 +2434,6 @@
 
         function onScanFailure(error) {
             // Quiet fail - avoid spamming alerts in live loop
-        }
-
-        function triggerAttendanceRegister() {
-            // In a real-world scenario, you scan the card or QR linked to employee
-            // Let's pop up a temporary automated selection to complete the flow gracefully
-            if (employees.length === 0) {
-                showScanFailureMessage("لا يوجد موظفون مسجلون في النظام حالياً.");
-                return;
-            }
-            const randEmp = employees[Math.floor(Math.random() * employees.length)];
-            processAttendanceForEmployee(randEmp.code);
         }
 
         function showScanFailureMessage(msg) {
@@ -2450,17 +2449,45 @@
         }
 
         // Live Employee Attendance Processor
-        async function processAttendanceForEmployee(empCode) {
-            const emp = employees.find(e => e.code === empCode);
-            if (!emp) return;
+        async function triggerAttendanceLog(targetCode) {
+            if (isScanning) return;
+            isScanning = true;
 
-            const today = new Date().toISOString().split('T')[0];
-            const timeStr = new Date().toTimeString().slice(0, 5); // "HH:MM"
+            const emp = employees.find(e => e.code === targetCode);
+            if (!emp) {
+                isScanning = false;
+                return;
+            }
+
+            // --- BUG 1: Cooldown Check (15 minutes) ---
+            const now = new Date();
+            const fifteenMinutesInMs = 15 * 60 * 1000;
+            
+            // Check last recorded log for this employee
+            const recentLog = attendanceLogs
+                .filter(log => log.employeeCode === targetCode)
+                .sort((a, b) => {
+                    const timeA = new Date(`${a.date}T${a.checkout || a.checkIn}`).getTime();
+                    const timeB = new Date(`${b.date}T${b.checkout || b.checkIn}`).getTime();
+                    return timeB - timeA;
+                })[0];
+
+            if (recentLog) {
+                const lastTime = new Date(`${recentLog.date}T${recentLog.checkout || recentLog.checkIn}`).getTime();
+                if ((now.getTime() - lastTime) < fifteenMinutesInMs) {
+                    showCustomToast("تم تسجيل بصمتك بالفعل! يرجى الانتظار 15 دقيقة بين العمليات.", 'warning');
+                    isScanning = false;
+                    return;
+                }
+            }
+
+            const today = now.toISOString().split('T')[0];
+            const timeStr = now.toTimeString().slice(0, 5); // "HH:MM"
 
             showLoading("جاري معالجة بيانات الحضور...");
             try {
                 // Check if already checked in today
-                const existingLogIdx = attendanceLogs.findIndex(log => log.date === today && log.employeeCode === empCode);
+                const existingLogIdx = attendanceLogs.findIndex(log => log.date === today && log.employeeCode === targetCode);
 
                 if (existingLogIdx === -1) {
                     // Register CHECK-IN
@@ -2480,7 +2507,7 @@
                     const newLog = {
                         id: `ATT-${Date.now().toString().slice(-4)}`,
                         date: today,
-                        employeeCode: empCode,
+                        employeeCode: targetCode,
                         employeeName: emp.name,
                         checkIn: timeStr,
                         checkout: null,
@@ -2521,6 +2548,8 @@
                 showCustomToast('حدث خطأ أثناء الاتصال بقاعدة البيانات المركزية.', 'warning');
             } finally {
                 hideLoading();
+                // Keep flag true for a short moment to ensure UI update and prevent immediate re-scan
+                setTimeout(() => { isScanning = false; }, 2000);
             }
         }
 
