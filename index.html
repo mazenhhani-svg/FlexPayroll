@@ -2614,7 +2614,7 @@
 
                 // Filter out "Leave" logs for attendance counting
                 const attendanceLogsInPeriod = empLogs.filter(log => log.status !== "إجازة");
-                const daysAttended = attendanceLogsInPeriod.length;
+                let daysAttended = attendanceLogsInPeriod.length;
                 const leaveTakenInPeriod = empLogs.filter(log => log.status === "إجازة").length;
 
                 // Monthly Accrual Leave System Logic
@@ -2668,9 +2668,7 @@
                     }
                 });
 
-                const attendanceLogsInPeriod = empLogs.filter(log => log.status !== "إجازة");
-                const daysAttended = dailyStats.size - Array.from(dailyStats.values()).filter(s => !s.isAttendance).length;
-                const leaveTakenInPeriod = empLogs.filter(log => log.status === "إجازة").length;
+                daysAttended = dailyStats.size - Array.from(dailyStats.values()).filter(s => !s.isAttendance).length;
                 const overtimeMultiplier = dept ? dept.multiplier : 1.5;
                 const penaltyMultiplier = dept ? dept.delayPenalty : 1.0;
 
