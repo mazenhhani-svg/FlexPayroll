@@ -1097,7 +1097,7 @@
     <!-- MAIN APP JAVASCRIPT LOGIC -->
     <script>
         // --- CENTRAL API CONFIGURATION ---
-        const API_URL = "https://script.google.com/macros/s/AKfycbyml46gTaElQjgpG76bRMLabvJSuw8pGabSiLvYlw65tcRNZER6BVjSWz9t5axOVtS1/exec";
+        const API_URL = "ضع_رابط_الـ_WEB_APP_الخاص_بكامل_هنا";
 
         // System Databases / Centralized State
         let employees = []; // Schema: code, name, title, phone, department, baseSalary, shiftId, hourlyRate, nationalId, createdAt
@@ -1156,58 +1156,98 @@
         const deviceHWID = generateDeviceUUID();
 
         // -------------------------------------------------------------
-        // BACKEND SYNCHRONIZATION ENGINE
+        // CENTRAL API ENGINE
         // -------------------------------------------------------------
+        /**
+         * Centralized API handler for all frontend-backend communication.
+         * Includes detailed logging and error handling as requested.
+         */
+        async function apiRequest(action, data = null, method = 'POST') {
+            const url = method === 'GET' ? `${API_URL}?action=${action}` : API_URL;
+            const options = {
+                method: method,
+                redirect: 'follow'
+            };
+
+            const payload = data ? { action, data } : { action };
+
+            if (method === 'POST') {
+                options.body = JSON.stringify(payload);
+            }
+
+            console.log(`%c========== API REQUEST [${action}] ==========`, 'color: #3b82f6; font-weight: bold;');
+            console.log('URL:', url);
+            console.log('Method:', method);
+            if (method === 'POST') console.log('Body:', payload);
+
+            try {
+                const response = await fetch(url, options);
+                const rawText = await response.text();
+                
+                console.log(`%c========== API RESPONSE [${action}] ==========`, 'color: #10b981; font-weight: bold;');
+                console.log('Status:', response.status);
+                console.log('Headers:', Object.fromEntries(response.headers.entries()));
+                console.log('Raw Response:', rawText);
+
+                let json;
+                try {
+                    json = JSON.parse(rawText);
+                    console.log('Parsed JSON:', json);
+                } catch (e) {
+                    console.error('JSON Parse Error:', e);
+                    throw new Error(`Invalid JSON response from server: ${rawText.substring(0, 100)}...`);
+                }
+
+                // Check for failure signals in both GAS standard and custom formats
+                if (!response.ok || json.success === false || json.status === "error") {
+                    throw new Error(json.message || json.error || `Server returned error ${response.status}`);
+                }
+
+                return json;
+            } catch (error) {
+                console.log(`%c========== API ERROR [${action}] ==========`, 'color: #ef4444; font-weight: bold;');
+                console.error('Error Message:', error.message);
+                console.error('Stack Trace:', error.stack);
+                throw error;
+            }
+        }
+
         async function syncAllDataFromBackend() {
+            if (API_URL.includes("ضع_رابط")) {
+                console.warn("API_URL is not configured. Skipping synchronization.");
+                return;
+            }
+
             showLoading("جاري مزامنة قاعدة البيانات المركزية...");
             try {
-                const response = await fetch(API_URL + "?action=getAllData");
-                if (!response.ok) throw new Error("Network response was not ok");
+                const result = await apiRequest('getAllData', null, 'GET');
                 
-                const result = await response.json();
-                if (result.status === "success") {
+                if (result.success) {
                     const data = result.data || {};
-                    // Safeguard against nulls/empty responses
+                    // Standardize local arrays from server data
                     employees = Array.isArray(data.employees) ? data.employees : [];
                     shifts = Array.isArray(data.shifts) ? data.shifts : [];
                     departments = Array.isArray(data.departments) ? data.departments : [];
                     attendanceLogs = Array.isArray(data.attendance) ? data.attendance : [];
                     adjustments = Array.isArray(data.adjustments) ? data.adjustments : [];
-                    activatedDevices = Array.isArray(data.activated_devices) ? data.activated_devices : [];
+                    activatedDevices = Array.isArray(data.devices) ? data.devices : [];
                     
                     renderAll();
+                    console.log("Synchronization complete. All UI components updated.");
                 } else {
-                    throw new Error(result.message || "Failed to fetch data");
+                    throw new Error(result.message || "Failed to fetch data from central database.");
                 }
             } catch (error) {
-                console.error("Sync Error:", error);
-                showCustomToast("حدث خطأ أثناء الاتصال بقاعدة البيانات المركزية. برجاء التحقق من اتصال الإنترنت.", "warning");
+                console.error("Critical Sync Error:", error);
+                showCustomToast("فشلت المزامنة: " + error.message, "warning");
             } finally {
                 hideLoading();
             }
         }
 
-        // GAS Web App often requires a standard fetch if CORS is handled:
+        // Keep for backward compatibility while refactoring
         async function postToBackend(payload) {
-            // Sanitize Payload: Ensure all values are primitives
-            const sanitizedData = {};
-            if (payload.data) {
-                for (const key in payload.data) {
-                    const val = payload.data[key];
-                    if (typeof val === 'object' && val !== null) {
-                        sanitizedData[key] = JSON.stringify(val); // Fallback for unexpected objects
-                    } else {
-                        sanitizedData[key] = val;
-                    }
-                }
-                payload.data = sanitizedData;
-            }
-
-            const response = await fetch(API_URL, {
-                method: "POST",
-                body: JSON.stringify(payload)
-            });
-            return await response.json();
+            return await apiRequest(payload.action, payload.data, 'POST');
         }
 
         function showLoading(message) {
@@ -1567,7 +1607,7 @@
                 const newEmp = { code, name, nationalId, title, phone, department, baseSalary, hourlyRate, shiftId, createdAt };
                 
                 const result = await postToBackend({ action: 'saveEmployee', data: newEmp });
-                if (result.status === "success") {
+                if (result.success) {
                     await syncAllDataFromBackend();
                     document.getElementById('form-add-employee').reset();
                     closeModal('modal-add-employee');
@@ -1588,7 +1628,7 @@
                 showLoading("جاري حذف الموظف من السجلات...");
                 try {
                     const result = await postToBackend({ action: 'deleteEmployee', data: { code: id } });
-                    if (result.status === "success") {
+                    if (result.success) {
                         await syncAllDataFromBackend();
                         showCustomToast('تم حذف الموظف بنجاح', 'info');
                     } else {
@@ -1637,7 +1677,7 @@
                 const updatedEmp = { code, name, nationalId, title, phone, department, baseSalary, hourlyRate, shiftId };
                 
                 const result = await postToBackend({ action: 'updateEmployee', data: updatedEmp });
-                if (result.status === "success") {
+                if (result.success) {
                     await syncAllDataFromBackend();
                     closeModal('modal-edit-employee');
                     showCustomToast('تم تحديث بيانات الموظف بنجاح!', 'success');
@@ -1727,7 +1767,7 @@
                 const newShift = { id, name, startTime, endTime, hours, gracePeriod, createdAt };
                 
                 const result = await postToBackend({ action: 'saveShift', data: newShift });
-                if (result.status === "success") {
+                if (result.success) {
                     await syncAllDataFromBackend();
                     document.getElementById('form-add-shift').reset();
                     closeModal('modal-add-shift');
@@ -1805,7 +1845,7 @@
                 const updatedShift = { id, name, startTime, endTime, hours, gracePeriod };
                 
                 const result = await postToBackend({ action: 'updateShift', data: updatedShift });
-                if (result.status === "success") {
+                if (result.success) {
                     await syncAllDataFromBackend();
                     closeModal('modal-edit-shift');
                     showCustomToast('تم تحديث بيانات الفترة بنجاح', 'success');
@@ -1832,7 +1872,7 @@
                 showLoading("جاري حذف فترة العمل...");
                 try {
                     const result = await postToBackend({ action: 'deleteShift', data: { id } });
-                    if (result.status === "success") {
+                    if (result.success) {
                         await syncAllDataFromBackend();
                         showCustomToast('تم حذف الفترة بنجاح', 'info');
                     } else {
@@ -1861,7 +1901,7 @@
                 const newDept = { id, name, multiplier, delayPenalty, vacationBalance, createdAt };
                 
                 const result = await postToBackend({ action: 'saveDepartment', data: newDept });
-                if (result.status === "success") {
+                if (result.success) {
                     await syncAllDataFromBackend();
                     document.getElementById('form-add-department').reset();
                     closeModal('modal-add-department');
@@ -1902,7 +1942,7 @@
                 const updatedDept = { id, name, multiplier, delayPenalty, vacationBalance };
                 
                 const result = await postToBackend({ action: 'updateDepartment', data: updatedDept });
-                if (result.status === "success") {
+                if (result.success) {
                     await syncAllDataFromBackend();
                     closeModal('modal-edit-department');
                     showCustomToast('تم تحديث بيانات القسم بنجاح', 'success');
@@ -1930,7 +1970,7 @@
                 showLoading("جاري حذف القسم من السجلات...");
                 try {
                     const result = await postToBackend({ action: 'deleteDepartment', data: { id } });
-                    if (result.status === "success") {
+                    if (result.success) {
                         await syncAllDataFromBackend();
                         showCustomToast('تم حذف القسم بنجاح', 'info');
                     } else {
@@ -2165,7 +2205,7 @@
                 };
 
                 const result = await postToBackend({ action: 'saveAttendance', data: newLog });
-                if (result.status === "success") {
+                if (result.success) {
                     await syncAllDataFromBackend();
                     closeModal('modal-manual-attendance');
                     showCustomToast('تم تسجيل الحضور اليدوي بنجاح', 'success');
@@ -2185,7 +2225,7 @@
                 showLoading("جاري حذف سجل الحضور...");
                 try {
                     const result = await postToBackend({ action: 'deleteAttendance', data: { id } });
-                    if (result.status === "success") {
+                    if (result.success) {
                         await syncAllDataFromBackend();
                         showCustomToast('تم حذف سجل الحضور', 'info');
                     } else {
@@ -2226,7 +2266,7 @@
                 const newAdj = { id, date, employeeId, type, amount, reason };
                 
                 const result = await postToBackend({ action: 'saveAdjustment', data: newAdj });
-                if (result.status === "success") {
+                if (result.success) {
                     await syncAllDataFromBackend();
                     document.getElementById('form-add-adjustment').reset();
                     closeModal('modal-add-adjustment');
@@ -2251,7 +2291,7 @@
             }
 
             adjustments.forEach(adj => {
-                const emp = employees.find(e => e.id === adj.employeeId);
+                const emp = employees.find(e => e.code === adj.employeeId);
                 const empName = emp ? emp.name : 'موظف مجهول';
                 const typeText = adj.type === 'bonus' ? 'مكافأة / حافز' : 'خصم جزاء';
                 const typeClass = adj.type === 'bonus' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-red-500/10 text-red-400 border-red-500/20';
@@ -2282,7 +2322,7 @@
                 showLoading("جاري حذف المعاملة المالية...");
                 try {
                     const result = await postToBackend({ action: 'deleteAdjustment', data: { id } });
-                    if (result.status === "success") {
+                    if (result.success) {
                         await syncAllDataFromBackend();
                         showCustomToast('تم إزالة المعاملة بنجاح', 'info');
                     } else {
@@ -2452,7 +2492,7 @@
                     };
 
                     const result = await postToBackend({ action: 'saveAttendance', data: newLog });
-                    if (result.status === "success") {
+                    if (result.success) {
                         await syncAllDataFromBackend();
                         triggerScanSuccessUI(emp.name, `حضور (توقيت تسجيل الدخول: ${timeStr})`, status);
                     } else {
@@ -2470,7 +2510,7 @@
                     const updatedLog = { ...log, checkout: timeStr, duration: parseFloat(diffHrs.toFixed(1)) };
 
                     const result = await postToBackend({ action: 'updateAttendance', data: updatedLog });
-                    if (result.status === "success") {
+                    if (result.success) {
                         await syncAllDataFromBackend();
                         triggerScanSuccessUI(emp.name, `انصراف (توقيت تسجيل الخروج: ${timeStr})`, "تم الانصراف بنجاح");
                     } else {
@@ -2706,16 +2746,16 @@
         
         function checkAuth() {
             const session = JSON.parse(sessionStorage.getItem('flex_session'));
-            const isDeviceActivated = activatedDevices.find(d => d.hwid === deviceHWID);
+            const isDeviceActivated = activatedDevices.find(d => d.hardwareId === deviceHWID);
 
             if (session) {
                 loginSuccess(session.role, session.empId);
             } else if (isDeviceActivated) {
                 // Auto-login employee or station if device is already activated
-                if (isDeviceActivated.empId === 'STATION') {
+                if (isDeviceActivated.employeeCode === 'STATION') {
                     loginSuccess('station', 'STATION');
                 } else {
-                    loginSuccess('employee', isDeviceActivated.empId);
+                    loginSuccess('employee', isDeviceActivated.employeeCode);
                 }
             } else {
                 // Show login shield
@@ -2775,7 +2815,7 @@
                     };
                     
                     const result = await postToBackend({ action: 'saveActivation', data: newActivation });
-                    if (result.status === "success") {
+                    if (result.success) {
                         await syncAllDataFromBackend();
                         loginSuccess('station', 'STATION');
                         showCustomToast('تم تفعيل الجهاز كشاشة عرض ذكية بنجاح', 'success');
@@ -2799,9 +2839,9 @@
                     };
                     
                     const result = await postToBackend({ action: 'saveActivation', data: newActivation });
-                    if (result.status === "success") {
+                    if (result.success) {
                         await syncAllDataFromBackend();
-                        loginSuccess('employee', match.id);
+                        loginSuccess('employee', match.code);
                         showCustomToast(`تم تفعيل الجهاز للموظف ${match.name} بنجاح`, 'success');
                     } else {
                         throw new Error(result.message);
@@ -2837,7 +2877,7 @@
                 roleEl.className = 'text-[10px] font-black text-amber-500 uppercase tracking-widest text-left leading-none';
                 nameEl.innerText = 'STATION KIOSK';
             } else {
-                const emp = employees.find(e => e.id === empId);
+                const emp = employees.find(e => e.code === empId);
                 roleEl.innerText = emp ? `موظف: ${emp.name.split(' ')[0]}` : 'موظف';
                 roleEl.className = 'text-[10px] font-black text-blue-400 uppercase tracking-widest text-left leading-none';
                 nameEl.innerText = emp ? emp.name : 'EMPLOYEE';
@@ -2970,7 +3010,7 @@
                 showLoading("جاري إلغاء تفعيل الجهاز...");
                 try {
                     const result = await postToBackend({ action: 'deleteActivation', data: { hardwareId: device.hardwareId } });
-                    if (result.status === "success") {
+                    if (result.success) {
                         await syncAllDataFromBackend();
                         showCustomToast('تم إلغاء تفعيل الجهاز بنجاح', 'info');
                     } else {
