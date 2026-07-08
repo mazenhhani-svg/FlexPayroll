@@ -3238,7 +3238,7 @@
             showLoading("جاري تفعيل الجهاز والتحقق من الصلاحيات...");
             try {
                 // Check if it's a Station Key (Public Display)
-                const stationKey = btoa('STATION' + deviceHWID).substr(0, 10).toUpperCase();
+                const stationKey = btoa(deviceHWID.slice(-8) + 'STATION'.slice(-4)).replace(/=/g, '').substr(0, 10).toUpperCase();
                 if (key === stationKey) {
                     const newActivation = {
                         employeeCode: 'STATION',
@@ -3259,7 +3259,7 @@
 
                 // Find matching employee key
                 const match = employees.find(emp => {
-                    const checkKey = btoa(emp.code + deviceHWID).substr(0, 10).toUpperCase();
+                    const checkKey = btoa(deviceHWID.slice(-8) + emp.code.slice(-4)).replace(/=/g, '').substr(0, 10).toUpperCase();
                     return checkKey === key;
                 });
 
@@ -3398,7 +3398,7 @@
                 return;
             }
 
-            const key = btoa(empId + hwid).substr(0, 10).toUpperCase();
+            const key = btoa(hwid.slice(-8) + empId.slice(-4)).replace(/=/g, '').substr(0, 10).toUpperCase();
             document.getElementById('display-generated-key').innerText = key;
             document.getElementById('generated-key-box').classList.remove('hidden');
             showCustomToast('تم توليد الكود بنجاح', 'success');
