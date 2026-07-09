@@ -3155,8 +3155,8 @@
                 loginSuccess(session.role, session.empId);
             } else if (isDeviceActivated) {
                 // Auto-login employee or station if device is already activated
-                if (isDeviceActivated.employeeCode === 'STATION') {
-                    loginSuccess('station', 'STATION');
+                if (isDeviceActivated.employeeCode === 'GENERAL' || isDeviceActivated.employeeCode === 'STATION') {
+                    loginSuccess('station', 'GENERAL');
                 } else {
                     loginSuccess('employee', isDeviceActivated.employeeCode);
                 }
@@ -3237,33 +3237,20 @@
 
             showLoading("جاري تفعيل الجهاز والتحقق من الصلاحيات...");
             try {
-                // Check if it's a Station Key (Public Display)
-                const stationKey = btoa(deviceHWID.slice(-8) + 'STATION'.slice(-4)).replace(/=/g, '').substr(0, 10).toUpperCase();
-                if (key === stationKey) {
-                    const newActivation = {
-                        employeeCode: 'STATION',
-                        hardwareId: deviceHWID,
-                        activatedAt: new Date().toISOString()
-                    };
-                    
-                    const result = await postToBackend({ action: 'saveActivation', data: newActivation });
-                    if (result.success) {
-                        await syncAllDataFromBackend();
-                        loginSuccess('station', 'STATION');
-                        showCustomToast('تم تفعيل الجهاز كشاشة عرض ذكية بنجاح', 'success');
-                    } else {
-                        throw new Error(result.message);
-                    }
-                    return;
-                }
-
-                // Find matching employee key
+                // 1. Find matching employee key FIRST
                 const match = employees.find(emp => {
                     const checkKey = btoa(deviceHWID.slice(-8) + emp.code.slice(-4)).replace(/=/g, '').substr(0, 10).toUpperCase();
                     return checkKey === key;
                 });
 
                 if (match) {
+                    // Prevent Device Hijacking: Check if this hardware is already bound to someone else
+                    const alreadyBound = activatedDevices.find(d => d.hardwareId === deviceHWID && d.employeeCode !== match.code);
+                    if (alreadyBound) {
+                        showCustomToast('عذراً، هذا الجهاز مرتبط بموظف آخر بالفعل. يرجى التواصل مع الإدارة.', 'warning');
+                        return;
+                    }
+
                     const newActivation = {
                         employeeCode: match.code,
                         hardwareId: deviceHWID,
@@ -3278,9 +3265,30 @@
                     } else {
                         throw new Error(result.message);
                     }
-                } else {
-                    showCustomToast('كود التفعيل غير صالح لهذا الجهاز!', 'warning');
+                    return;
                 }
+
+                // 2. Check for GENERAL STATION key ONLY if no employee match was found
+                const generalKey = btoa(deviceHWID.slice(-8) + 'GENERAL'.slice(-4)).replace(/=/g, '').substr(0, 10).toUpperCase();
+                if (key === generalKey) {
+                    const newActivation = {
+                        employeeCode: 'GENERAL',
+                        hardwareId: deviceHWID,
+                        activatedAt: new Date().toISOString()
+                    };
+                    
+                    const result = await postToBackend({ action: 'saveActivation', data: newActivation });
+                    if (result.success) {
+                        await syncAllDataFromBackend();
+                        loginSuccess('station', 'GENERAL');
+                        showCustomToast('تم تفعيل الجهاز كشاشة عرض عامة بنجاح', 'success');
+                    } else {
+                        throw new Error(result.message);
+                    }
+                    return;
+                }
+
+                showCustomToast('كود التفعيل غير صالح لهذا الجهاز!', 'warning');
             } catch (error) {
                 showCustomToast('حدث خطأ أثناء الاتصال بقاعدة البيانات المركزية.', 'warning');
             } finally {
@@ -3307,7 +3315,7 @@
             } else if (role === 'station') {
                 roleEl.innerText = 'جهاز العرض العام';
                 roleEl.className = 'text-[10px] font-black text-amber-500 uppercase tracking-widest text-left leading-none';
-                nameEl.innerText = 'STATION KIOSK';
+                nameEl.innerText = 'GENERAL STATION';
             } else {
                 const emp = employees.find(e => e.code === empId);
                 roleEl.innerText = emp ? `موظف: ${emp.name.split(' ')[0]}` : 'موظف';
@@ -3419,7 +3427,7 @@
                 tbody.innerHTML += `
                     <tr class="hover:bg-slate-700/30 transition-colors">
                         <td class="p-3">
-                            <div class="font-bold text-slate-200">${emp ? emp.name : (d.employeeCode === 'STATION' ? 'جهاز عرض عام' : '---')}</div>
+                            <div class="font-bold text-slate-200">${emp ? emp.name : (d.employeeCode === 'GENERAL' || d.employeeCode === 'STATION' ? 'جهاز عرض عام' : '---')}</div>
                             <div class="text-[10px] text-slate-500">${d.employeeCode}</div>
                         </td>
                         <td class="p-3 font-mono text-blue-400">${d.hardwareId}</td>
@@ -3477,7 +3485,7 @@
             const secEmpSelect = document.getElementById('sec-emp-select');
             if (secEmpSelect) {
                 secEmpSelect.innerHTML = '<option value="">اختر الموظف...</option>';
-                secEmpSelect.innerHTML += '<option value="STATION" class="font-bold text-amber-500">⚠️ جهاز عرض عام (شاشة التعليق الذكية)</option>';
+                secEmpSelect.innerHTML += '<option value="GENERAL" class="font-bold text-amber-500">⚠️ جهاز عرض عام (شاشة التعليق الذكية)</option>';
                 employees.forEach(emp => {
                     secEmpSelect.innerHTML += `<option value="${emp.code}">${emp.name} (${emp.code})</option>`;
                 });
