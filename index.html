@@ -1124,7 +1124,12 @@
             if (!timeStr) return "00:00";
             let str = String(timeStr).trim();
             if (str.includes("T")) {
-                // Extract the section right after 'T' (e.g., "07:00:00.000Z")
+                // Parse as date and use local hours/minutes
+                const d = new Date(str);
+                if (!isNaN(d.getTime())) {
+                    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+                }
+                // Fallback to literal if parsing fails
                 let timePart = str.split("T")[1] || "";
                 let parts = timePart.split(":");
                 if (parts.length >= 2) {
@@ -1292,6 +1297,25 @@
             }
         }
 
+        // Standard local date string generator (YYYY-MM-DD)
+        function getLocalISODate() {
+            const now = new Date();
+            const y = now.getFullYear();
+            const m = String(now.getMonth() + 1).padStart(2, '0');
+            const d = String(now.getDate()).padStart(2, '0');
+            return `${y}-${m}-${d}`;
+        }
+
+        // Standard local datetime string generator (YYYY-MM-DDTHH:mm:ss)
+        function getLocalISODateTime() {
+            const now = new Date();
+            const date = getLocalISODate();
+            const h = String(now.getHours()).padStart(2, '0');
+            const m = String(now.getMinutes()).padStart(2, '0');
+            const s = String(now.getSeconds()).padStart(2, '0');
+            return `${date}T${h}:${m}:${s}`;
+        }
+
         async function syncAllDataFromBackend() {
             if (!API_URL || API_URL.trim() === "" || API_URL.includes("ضع_رابط")) {
                 console.warn("API_URL is not configured. Skipping synchronization.");
@@ -1402,13 +1426,18 @@
             });
             
             // Set Default Dates
-            const todayStr = new Date().toISOString().split('T')[0];
+            const todayStr = getLocalISODate();
             document.getElementById('attendance-filter-date').value = todayStr;
             document.getElementById('adj-date').value = todayStr;
             
             // Period calculation setup
-            const firstDayOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().split('T')[0];
-            document.getElementById('payroll-start-date').value = firstDayOfMonth;
+            const firstDayOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+            const y_start = firstDayOfMonth.getFullYear();
+            const m_start = String(firstDayOfMonth.getMonth() + 1).padStart(2, '0');
+            const d_start = String(firstDayOfMonth.getDate()).padStart(2, '0');
+            const firstDayStr = `${y_start}-${m_start}-${d_start}`;
+            
+            document.getElementById('payroll-start-date').value = firstDayStr;
             document.getElementById('payroll-end-date').value = todayStr;
 
             // Start clock and security code logic
@@ -1789,7 +1818,7 @@
                 const department = document.getElementById('emp-dept').value;
                 const baseSalary = parseFloat(document.getElementById('emp-salary').value);
                 const shiftId = document.getElementById('emp-shift').value;
-                const createdAt = new Date().toISOString();
+                const createdAt = getLocalISODateTime();
                 
                 const hourlyRate = parseFloat(document.getElementById('emp-hourly-rate').value) || 0;
 
@@ -1974,7 +2003,7 @@
                 const endTime = document.getElementById('shift-end').value;
                 const hours = parseFloat(document.getElementById('shift-work-hours').value) || 8;
                 const gracePeriod = parseInt(document.getElementById('shift-grace').value) || 15;
-                const createdAt = new Date().toISOString();
+                const createdAt = getLocalISODateTime();
 
                 const newShift = { id, name, startTime, endTime, hours, gracePeriod, createdAt };
                 
@@ -2120,7 +2149,7 @@
                 const multiplier = parseFloat(document.getElementById('dept-overtime-multiplier').value);
                 const delayPenalty = parseFloat(document.getElementById('dept-penalty-multiplier').value);
                 const vacationBalance = parseInt(document.getElementById('dept-leave-days').value);
-                const createdAt = new Date().toISOString();
+                const createdAt = getLocalISODateTime();
 
                 const newDept = { id, name, multiplier, delayPenalty, vacationBalance, createdAt };
                 
@@ -2479,7 +2508,7 @@
             triggerText.classList.remove('text-slate-200');
             document.getElementById('manual-emp-panel').classList.add('hidden');
             
-            document.getElementById('manual-date').value = new Date().toISOString().split('T')[0];
+            document.getElementById('manual-date').value = getLocalISODate();
             document.getElementById('manual-checkin').value = "09:00";
             document.getElementById('manual-checkout').value = "17:00";
             openModal('modal-manual-attendance');
@@ -2576,9 +2605,9 @@
                     const d = String(value.getDate()).padStart(2, '0');
                     return `${y}-${m}-${d}`;
                 } else {
-                    // Extract absolute time without offset
-                    const h = String(value.getUTCHours()).padStart(2, '0');
-                    const min = String(value.getUTCMinutes()).padStart(2, '0');
+                    // Extract absolute time without offset using local hours
+                    const h = String(value.getHours()).padStart(2, '0');
+                    const min = String(value.getMinutes()).padStart(2, '0');
                     return `${h}:${min}`;
                 }
             }
@@ -2847,7 +2876,7 @@
             }
 
             const now = new Date();
-            const today = now.toISOString().split('T')[0];
+            const today = getLocalISODate();
             const timeStr = now.toTimeString().slice(0, 5); // "HH:MM"
 
             showLoading("جاري معالجة بيانات الحضور...");
@@ -2858,7 +2887,7 @@
                     action: 'logAttendance', 
                     data: { 
                         employeeCode: targetCode,
-                        timestamp: now.toISOString() 
+                        timestamp: getLocalISODateTime() 
                     } 
                 });
 
