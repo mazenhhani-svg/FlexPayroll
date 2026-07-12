@@ -1789,7 +1789,7 @@
 
         // Daily Stats Refresher
         function updateDailyStats() {
-            const todayStr = new Date().toISOString().split('T')[0];
+            const todayStr = getLocalISODate();
             const logsToday = attendanceLogs.filter(log => log.date === todayStr);
             const attendedCount = logsToday.length;
             const totalEmps = employees.length;
@@ -2621,12 +2621,26 @@
                 return getRawTimeText(str);
             }
 
-            // Handle YYYY-MM-DD or other formats
             if (type === 'date') {
-                // Look for YYYY-MM-DD pattern
-                const match = str.match(/(\d{4})-(\d{2})-(\d{2})/);
-                if (match) return match[0];
-                // Try to parse if not matching
+                // 1. Match YYYY-MM-DD (canonical format)
+                const ymd = str.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+                if (ymd) {
+                    const y = ymd[1];
+                    const m = ymd[2].padStart(2, '0');
+                    const d = ymd[3].padStart(2, '0');
+                    return `${y}-${m}-${d}`;
+                }
+
+                // 2. Match DD-MM-YYYY or DD/MM/YYYY
+                const dmy = str.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+                if (dmy) {
+                    const d = dmy[1].padStart(2, '0');
+                    const m = dmy[2].padStart(2, '0');
+                    const y = dmy[3];
+                    return `${y}-${m}-${d}`;
+                }
+
+                // 3. Fallback to generic parsing if possible
                 try {
                     const d = new Date(str);
                     if (!isNaN(d.getTime())) {
@@ -3283,7 +3297,7 @@
                     const newActivation = {
                         employeeCode: match.code,
                         hardwareId: deviceHWID,
-                        activatedAt: new Date().toISOString()
+                        activatedAt: getLocalISODateTime()
                     };
                     
                     const result = await postToBackend({ action: 'saveActivation', data: newActivation });
@@ -3303,7 +3317,7 @@
                     const newActivation = {
                         employeeCode: 'GENERAL',
                         hardwareId: deviceHWID,
-                        activatedAt: new Date().toISOString()
+                        activatedAt: getLocalISODateTime()
                     };
                     
                     const result = await postToBackend({ action: 'saveActivation', data: newActivation });
@@ -3460,7 +3474,7 @@
                             <div class="text-[10px] text-slate-500">${d.employeeCode}</div>
                         </td>
                         <td class="p-3 font-mono text-blue-400">${d.hardwareId}</td>
-                        <td class="p-3 text-center text-slate-400">${new Date(d.activatedAt).toLocaleDateString('ar-EG')}</td>
+                        <td class="p-3 text-center text-slate-400">${sanitizeDateTime(d.activatedAt, 'date')}</td>
                         <td class="p-3 text-center">
                             <button onclick="removeDevice(${idx})" class="text-red-400 hover:text-red-500 p-1">
                                 <i data-lucide="unlink" class="w-4 h-4"></i>
