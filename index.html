@@ -1483,12 +1483,15 @@
                         const currentLatestId = currentLatestLog ? String(currentLatestLog.id) : null;
 
                         if (newLogs.length !== attendanceLogs.length || incomingLatestId !== currentLatestId) {
-                            console.log("Real-time Update: New logs detected.");
+                            console.log("Real-time Update: New attendance logs detected.");
                             attendanceLogs = newLogs;
-                            if (activeScreen === 'records') {
+                            
+                            // Always update dashboard statistics (sidebar glance) - lightweight
+                            updateDailyStats();
+                            
+                            // Update table view if the user is currently on the logs tab
+                            if (activeTab === 'tab-attendance-logs') {
                                 renderAttendanceLogs();
-                            } else if (activeScreen === 'dashboard') {
-                                updateDailyStats();
                             }
                         }
                     }
@@ -1791,7 +1794,11 @@
         function updateDailyStats() {
             const todayStr = getLocalISODate();
             const logsToday = attendanceLogs.filter(log => log.date === todayStr);
-            const attendedCount = logsToday.length;
+            
+            // Count unique employees present today
+            const uniqueEmployees = new Set(logsToday.map(log => log.employeeCode));
+            const attendedCount = uniqueEmployees.size;
+            
             const totalEmps = employees.length;
             const absentCount = Math.max(0, totalEmps - attendedCount);
 
@@ -2915,6 +2922,7 @@
                     // Add new log to local state immediately
                     attendanceLogs.unshift(newLog);
                     renderAttendanceLogs();
+                    updateDailyStats();
 
                     const actionText = newLog.status === 'حضور' ? 
                         `حضور (توقيت تسجيل الدخول: ${newLog.attendance})` : 
