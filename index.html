@@ -139,6 +139,14 @@
                     <p class="text-center text-[11px] text-slate-500 leading-relaxed px-4">ملاحظة: يتم ربط حساب الموظف بهذا الجهاز حصرياً. لا يمكنك تسجيل الدخول من جهاز آخر دون إذن المدير.</p>
                 </div>
             </div>
+
+            <!-- Footer links -->
+            <div class="flex items-center justify-center gap-6">
+                <button onclick="showConnectionSettings()" class="flex items-center gap-2 text-xs font-bold text-slate-500 hover:text-brand-400 transition-all">
+                    <i data-lucide="settings-2" class="w-4 h-4"></i>
+                    <span>إعدادات الاتصال</span>
+                </button>
+            </div>
         </div>
     </div>
 
@@ -1319,6 +1327,10 @@
         async function syncAllDataFromBackend() {
             if (!API_URL || API_URL.trim() === "" || API_URL.includes("ضع_رابط")) {
                 console.warn("API_URL is not configured. Skipping synchronization.");
+                // If not activated, we should guide the user to set the API URL
+                if (activatedDevices.length === 0 && !sessionStorage.getItem('flex_session')) {
+                    showCustomToast("يرجى ضبط رابط الاتصال (API URL) من خلال أيقونة الإعدادات أسفل الشاشة.", "info");
+                }
                 return;
             }
 
@@ -1817,7 +1829,8 @@
             showLoading("جاري حفظ بيانات الموظف الجديد...");
             
             try {
-                const code = `EMP-${Date.now().toString().slice(-4)}`;
+                // Fix 1: Collision-resistant code generation (Timestamp + Random suffix)
+                const code = `EMP-${Date.now()}${Math.floor(Math.random() * 1000)}`;
                 const name = document.getElementById('emp-name').value;
                 const nationalId = document.getElementById('emp-national-id').value;
                 const title = document.getElementById('emp-title').value;
@@ -1833,9 +1846,14 @@
                 
                 const result = await postToBackend({ action: 'saveEmployee', data: newEmp });
                 if (result.success) {
-                    employees.push(newEmp);
-                    renderAll();
+                    // Fix 2: Synchronize from backend instead of optimistic local update
+                    await syncAllDataFromBackend();
+                    
                     document.getElementById('form-add-employee').reset();
+                    // FIX #1: Clear hidden ID fields to prevent accidental updates on next creation
+                    if (document.getElementById('emp-id')) document.getElementById('emp-id').value = '';
+                    if (document.getElementById('edit-emp-id-hidden')) document.getElementById('edit-emp-id-hidden').value = '';
+                    
                     closeModal('modal-add-employee');
                     showCustomToast('تم تسجيل الموظف الجديد بنجاح!', 'success');
                 } else {
@@ -1910,6 +1928,10 @@
                         employees[idx] = { ...employees[idx], ...updatedEmp };
                     }
                     renderAll();
+                    // FIX #1: Clear hidden ID fields to prevent accidental persistence
+                    if (document.getElementById('emp-id')) document.getElementById('emp-id').value = '';
+                    if (document.getElementById('edit-emp-id-hidden')) document.getElementById('edit-emp-id-hidden').value = '';
+                    
                     closeModal('modal-edit-employee');
                     showCustomToast('تم تحديث بيانات الموظف بنجاح!', 'success');
                 } else {
@@ -3202,21 +3224,37 @@
             const session = JSON.parse(sessionStorage.getItem('flex_session'));
             const isDeviceActivated = activatedDevices.find(d => d.hardwareId === deviceHWID);
 
-            if (session) {
-                loginSuccess(session.role, session.empId);
-            } else if (isDeviceActivated) {
-                // Auto-login employee or station if device is already activated
-                if (isDeviceActivated.employeeCode === 'GENERAL' || isDeviceActivated.employeeCode === 'STATION') {
-                    loginSuccess('station', 'GENERAL');
+            // 1. Administrator Priority (Stored in sessionStorage)
+            if (session && session.role === 'admin') {
+                loginSuccess('admin');
+                return;
+            }
+
+            // 2. Device-Based Identity (The Source of Truth from Backend)
+            if (isDeviceActivated) {
+                const targetRole = (isDeviceActivated.employeeCode === 'GENERAL' || isDeviceActivated.employeeCode === 'STATION') ? 'station' : 'employee';
+                const targetId = (isDeviceActivated.employeeCode === 'STATION') ? 'GENERAL' : isDeviceActivated.employeeCode;
+
+                // Sync identity if local session is missing or incorrect
+                if (!session || session.role !== targetRole || session.empId !== targetId) {
+                    loginSuccess(targetRole, targetId);
                 } else {
-                    loginSuccess('employee', isDeviceActivated.employeeCode);
+                    // Identity matches, just ensure UI is shown
+                    loginSuccess(targetRole, targetId);
                 }
             } else {
-                // Show login shield
+                // 3. Unauthorized or De-activated Device
+                if (session) {
+                    sessionStorage.removeItem('flex_session');
+                }
+                
                 const hwidEl = document.getElementById('display-hwid');
                 if (hwidEl) hwidEl.value = deviceHWID;
                 document.getElementById('login-shield').classList.remove('hidden');
                 document.getElementById('app-wrap').classList.add('hidden');
+                
+                // Default to employee activation mode for unactivated devices
+                toggleLoginMode('employee');
             }
         }
 
@@ -3279,6 +3317,18 @@
             }
         }
 
+        function showConnectionSettings() {
+            const currentUrl = localStorage.getItem('flex_api_url') || '';
+            const newUrl = prompt('يرجى إدخال رابط Google Web App URL (API):', currentUrl);
+            if (newUrl !== null) {
+                const trimmedUrl = newUrl.trim();
+                localStorage.setItem('flex_api_url', trimmedUrl);
+                API_URL = trimmedUrl;
+                showCustomToast('تم تحديث رابط الاتصال بنجاح. جاري إعادة المزامنة...', 'success');
+                syncAllDataFromBackend();
+            }
+        }
+
         async function handleEmployeeActivation() {
             const key = document.getElementById('activation-key').value.trim().toUpperCase();
             if (!key) {
@@ -3286,22 +3336,31 @@
                 return;
             }
 
+            // Ensure we have the latest employee data before verifying
+            if (employees.length === 0) {
+                if (!API_URL || API_URL === "") {
+                    showCustomToast('يرجى ضبط إعدادات الاتصال (API URL) أولاً. يرجى مراجعة المسؤول.', 'error');
+                    return;
+                }
+                await syncAllDataFromBackend();
+            }
+
             showLoading("جاري تفعيل الجهاز والتحقق من الصلاحيات...");
             try {
                 // 1. Find matching employee key FIRST
                 const match = employees.find(emp => {
-                    const checkKey = btoa(deviceHWID.slice(-8) + emp.code.slice(-4)).replace(/=/g, '').substr(0, 10).toUpperCase();
-                    return checkKey === key;
+                    // Fix: Use full code for activation key to eliminate collision risk
+                    const checkKey = btoa(deviceHWID.slice(-8) + emp.code).replace(/=/g, '').substr(0, 10).toUpperCase();
+                    if (checkKey === key) return true;
+
+                    // Backward compatibility for keys generated with the legacy 4-character suffix logic
+                    const checkKeyLegacy = btoa(deviceHWID.slice(-8) + emp.code.slice(-4)).replace(/=/g, '').substr(0, 10).toUpperCase();
+                    return checkKeyLegacy === key;
                 });
 
                 if (match) {
-                    // Prevent Device Hijacking: Check if this hardware is already bound to someone else
-                    const alreadyBound = activatedDevices.find(d => d.hardwareId === deviceHWID && d.employeeCode !== match.code);
-                    if (alreadyBound) {
-                        showCustomToast('عذراً، هذا الجهاز مرتبط بموظف آخر بالفعل. يرجى التواصل مع الإدارة.', 'warning');
-                        return;
-                    }
-
+                    // Note: We allow re-assignment if a valid key is provided, 
+                    // as the key itself is proof of administrative authorization.
                     const newActivation = {
                         employeeCode: match.code,
                         hardwareId: deviceHWID,
@@ -3320,8 +3379,9 @@
                 }
 
                 // 2. Check for GENERAL STATION key ONLY if no employee match was found
-                const generalKey = btoa(deviceHWID.slice(-8) + 'GENERAL'.slice(-4)).replace(/=/g, '').substr(0, 10).toUpperCase();
-                if (key === generalKey) {
+                const generalKey = btoa(deviceHWID.slice(-8) + 'GENERAL').replace(/=/g, '').substr(0, 10).toUpperCase();
+                const generalKeyLegacy = btoa(deviceHWID.slice(-8) + 'GENERAL'.slice(-4)).replace(/=/g, '').substr(0, 10).toUpperCase();
+                if (key === generalKey || key === generalKeyLegacy) {
                     const newActivation = {
                         employeeCode: 'GENERAL',
                         hardwareId: deviceHWID,
@@ -3453,11 +3513,13 @@
             const hwid = document.getElementById('sec-hwid-input').value.trim();
 
             if (!empId || !hwid) {
-                showCustomToast('يرجى اختيار موظف وإدخال HWID الخاص بجهازه', 'warning');
+                // FIX #2: Appropriate validation message
+                showCustomToast('يرجى اختيار موظف أو محطة عامة وإدخال Hardware ID لتوليد الكود', 'warning');
                 return;
             }
 
-            const key = btoa(hwid.slice(-8) + empId.slice(-4)).replace(/=/g, '').substr(0, 10).toUpperCase();
+            // Fix: Use full ID/code for better entropy and collision resistance in activation keys
+            const key = btoa(hwid.slice(-8) + empId).replace(/=/g, '').substr(0, 10).toUpperCase();
             document.getElementById('display-generated-key').innerText = key;
             document.getElementById('generated-key-box').classList.remove('hidden');
             showCustomToast('تم توليد الكود بنجاح', 'success');
@@ -3535,7 +3597,8 @@
             // Populate security panel emp select
             const secEmpSelect = document.getElementById('sec-emp-select');
             if (secEmpSelect) {
-                secEmpSelect.innerHTML = '<option value="">اختر الموظف...</option>';
+                // FIX #2: Add explicit placeholder and general station option
+                secEmpSelect.innerHTML = '<option value="">-- اختر الموظف / المحطة العامة --</option>';
                 secEmpSelect.innerHTML += '<option value="GENERAL" class="font-bold text-amber-500">⚠️ جهاز عرض عام (شاشة التعليق الذكية)</option>';
                 employees.forEach(emp => {
                     secEmpSelect.innerHTML += `<option value="${emp.code}">${emp.name} (${emp.code})</option>`;
